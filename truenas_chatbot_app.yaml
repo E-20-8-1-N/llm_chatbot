@@ -1,0 +1,81 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-chatbot-service # Name of your service
+spec:
+  selector:
+    app: ai-chatbot # Must match the label in your Deployment
+  ports:
+    - protocol: TCP
+      port: 80 # Port the service will be available on *within the K8s cluster*
+      targetPort: 8000 # Port your container (Gunicorn) is listening on
+  # type: ClusterIP # Default - TrueNAS will handle Ingress if you set up web access
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-chatbot-deployment # Name of your deployment
+  labels:
+    app: ai-chatbot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-chatbot
+  template:
+    metadata:
+      labels:
+        app: ai-chatbot
+    spec:
+      containers:
+        - name: ai-chatbot-app
+          image: ethanhph/truenas-chatbot:latest # YOUR BUILT IMAGE
+          imagePullPolicy: Always # Or IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            # ROCm/HIP specific (already in Dockerfile but can be overridden here)
+            - name: HSA_OVERRIDE_GFX_VERSION
+              value: "10.3.0"
+            - name: HIP_VISIBLE_DEVICES
+              value: "0" # Assuming the iGPU is the first/only AMD GPU
+            # LLM and App specific
+            - name: LLM_MODEL_PATH # Path INSIDE the container where model is mounted
+              value: "/models/your_llama_model.gguf" # e.g., llama-2-7b-chat.Q4_K_M.gguf
+            - name: USER_DATA_PATH_IN_CONTAINER # Path INSIDE container for user files
+              value: "/mediafiles"
+            - name: DJANGO_SETTINGS_MODULE
+              value: "chatbot_project.settings"
+            - name: LLAMA_N_GPU_LAYERS # Control GPU offloading
+              value: "-1" # Try -1 for all, or 20 for iGPU, or 0 for CPU only if GPU fails
+            - name: LLAMA_N_CTX
+              value: "4096" # LLM Context size
+            # Add any other ENV vars your Django app might need (e.g., SECRET_KEY, DB settings if you add a DB)
+            # - name: SECRET_KEY
+            #   value: "your-super-secret-django-key-generate-a-real-one"
+          volumeMounts:
+            - name: llm-models-storage
+              mountPath: /models # Mount point for LLM models inside container
+            - name: user-data-storage
+              mountPath: /mediafiles # Mount point for user data (photos, etc.) inside container
+          resources:
+            limits:
+              amd.com/gpu: 1 # CRITICAL: This requests 1 AMD GPU from Kubernetes
+            requests:
+              amd.com/gpu: 1
+      volumes:
+        - name: llm-models-storage
+          hostPath:
+            # IMPORTANT: Path on your TrueNAS host where you store GGUF model files
+            path: /mnt/ai_models
+            type: DirectoryOrCreate # Or Directory if it must exist
+        - name: user-data-storage
+          hostPath:
+            # IMPORTANT: Path on your TrueNAS host to the data you want the chatbot to access
+            # This should be the root directory for the relative file paths you provide.
+            # For example, if you provide "photos/image.jpg" in the API,
+            # and this hostPath is /mnt/your_pool/mydata,
+            # the app will look for /mnt/your_pool/mydata/photos/image.jpg
+            path: /mnt
+            type: Directory
